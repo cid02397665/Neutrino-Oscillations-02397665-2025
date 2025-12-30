@@ -1,0 +1,744 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import xgboost
+import pickle
+from scipy.optimize import minimize
+from matplotlib.colors import LogNorm
+from sklearn.metrics import roc_curve, roc_auc_score
+from matplotlib.lines import Line2D
+from scipy.interpolate import interp1d
+
+#%% Reading the Simulated unoscillated Pickle File
+
+file_path = r"C:\Users\emili\OneDrive - Imperial College London\Year 3\Lab\Neutrino Oscillations\Simulation.pkl"
+
+with open(file_path, "rb") as f:
+    data_unosc = pickle.load(f)
+    
+print("Columns in DataFrame:")
+for col in data_unosc.columns:
+    print(col)
+    
+#%% Reading the Simulated Oscillated Pickle File
+
+file_path = r"C:\Users\emili\OneDrive - Imperial College London\Year 3\Lab\Neutrino Oscillations\OscillatedSimulation.pkl"
+
+with open(file_path, "rb") as f:
+    data_osc = pickle.load(f)
+    
+print("Columns in DataFrame:")
+for col in data_osc.columns:
+    print(col)
+    
+#%% Reading Data of microboone
+
+file_path = r"C:\Users\emili\OneDrive - Imperial College London\Year 3\Lab\Neutrino Oscillations\Data.pkl"
+
+with open(file_path, "rb") as f:
+    data_data = pickle.load(f)
+    
+print("Columns in DataFrame:")
+for col in data_data.columns:
+    print(col)
+
+#%% Reading Result of MiniBoone
+
+file_path = r"C:\Users\emili\OneDrive - Imperial College London\Year 3\Lab\Neutrino Oscillations\Result_MiniBooNE.pkl"
+
+with open(file_path, "rb") as f:
+    data_res = pickle.load(f)
+    
+print("Columns in DataFrame:")
+for col in data_res.columns:
+    print(col)
+
+#%% Reading LSND
+
+file_path = r"C:\Users\emili\OneDrive - Imperial College London\Year 3\Lab\Neutrino Oscillations\Result_LSND.pkl"
+
+with open(file_path, "rb") as f:
+    data_lsnd = pickle.load(f)
+    
+print("Columns in DataFrame:")
+for col in data_lsnd.columns:
+    print(col)
+
+#%% file cleaning
+
+os = data_osc[np.logical_and(data_osc['Simulation category'] == 21, data_osc['Total energy'] < 2.5)]
+us = data_unosc[np.logical_and(data_unosc['Simulation category'] == 21, data_unosc['Total energy'] < 2.5)]
+ud = data_data[data_data['Total energy'] < 2.5]
+
+#%% implementing ML
+
+model = xgboost.XGBClassifier(eval_metric='auc', early_stopping_rounds=50, n_estimators=1000, learning_rate=0.3, max_depth=6)
+
+obj_cols = data_osc.select_dtypes(include=['object']).columns
+data_osc[obj_cols] = data_osc[obj_cols].apply(pd.to_numeric, errors='coerce')
+
+data_osc["label"] = (data_osc["Simulation category"] == 21).astype(int)
+
+sim_sig = data_osc[np.logical_and(data_osc['Simulation category'] == 21, data_osc['Total energy'] < 2.5)]
+sim_bkg = data_osc[np.logical_and(data_osc['Simulation category'] != 21, data_osc['Total energy'] < 2.5)]
+
+sim_sig_w = sim_sig["Simulation weight"].values
+sim_bkg_w = sim_bkg["Simulation weight"].values
+
+leak_cols = [
+    "Simulation category",              
+    "Simulation weight",                
+    "Simulated neutrino energy",
+    "Simulated neutrino flight distance",
+    "Simulated muon momentum",
+]
+
+sim_sig_X = sim_sig.drop(columns=leak_cols + ["label"])
+sim_bkg_X = sim_bkg.drop(columns=leak_cols + ["label"])
+
+sim_sig_y = sim_sig["label"].values
+sim_bkg_y = sim_bkg["label"].values
+
+sim_sig_tot = len(sim_sig_X)
+sim_bkg_tot = len(sim_bkg_X)
+
+n_sig_train = int(0.9*sim_sig_tot)
+n_sig_test  = sim_sig_tot - n_sig_train
+n_bkg_train = int(0.9*sim_bkg_tot)
+n_bkg_test  = sim_bkg_tot - n_bkg_train
+
+x_train = pd.concat([sim_sig_X[:n_sig_train], sim_bkg_X[:n_bkg_train]], axis=0, ignore_index=True)
+y_train = list(sim_sig_y[:n_sig_train]) + list(sim_bkg_y[:n_bkg_train])
+
+x_test = pd.concat([sim_sig_X[n_sig_train:], sim_bkg_X[n_bkg_train:]], axis=0, ignore_index=True)
+y_test = list(sim_sig_y[n_sig_train:]) + list(sim_bkg_y[n_bkg_train:])
+
+w_train = list(sim_sig_w[:n_sig_train]) + list(sim_bkg_w[:n_bkg_train])
+w_test  = list(sim_sig_w[n_sig_train:]) + list(sim_bkg_w[n_bkg_train:])
+
+model.fit(x_train, y_train, sample_weight=w_train, eval_set=[(x_test,y_test)])
+
+#%% testing MLL
+
+prediction = model.predict_proba(x_test)
+
+sig_scores = [p[1] for p, cls in zip(prediction, y_test) if cls == 1]
+bkg_scores = [p[1] for p, cls in zip(prediction, y_test) if cls == 0]
+
+sig_weights = [w for w, cls in zip(w_test, y_test) if cls == 1]
+bkg_weights = [w for w, cls in zip(w_test, y_test) if cls == 0]
+
+plt.hist(sig_scores, bins=100, weights=sig_weights, label='Signal', alpha=0.5)
+plt.hist(bkg_scores, bins=100, weights=bkg_weights, label='Background', alpha=0.5)
+plt.xlabel(r'Signal Probability')
+plt.ylabel(r'Candidates$')
+plt.legend()
+plt.show()
+
+background_accepted, signal_accepted, probabilities_tested = roc_curve(y_test, prediction[:,1])
+plt.plot(background_accepted, signal_accepted, label='ROC curve')
+plt.plot([0,1], [0,1], color='red', linestyle='--', label = 'Random')
+plt.xlabel(r'Background Contamination')
+plt.ylabel(r'Signal Efficiency')
+plt.legend()
+plt.show()
+auc = roc_auc_score(y_test, prediction[:, 1])
+print("AUC =", auc)
+
+a = xgboost.plot_importance(model)
+
+#%% uncertainty on AUC
+
+def delong_auc_var(y, p):
+    y = np.asarray(y)
+    p = np.asarray(p)
+
+    pos = p[y == 1]
+    neg = p[y == 0]
+
+    m, n = len(pos), len(neg)
+
+    v10 = np.array([np.mean(pos > x) + 0.5*np.mean(pos == x) for x in neg])
+    v01 = np.array([np.mean(x > neg) + 0.5*np.mean(x == neg) for x in pos])
+
+    auc = v10.mean()
+    var = np.var(v10, ddof=1)/n + np.var(v01, ddof=1)/m
+
+    return auc, var
+
+auc, var = delong_auc_var(y_test, prediction[:,1])
+auc_err = np.sqrt(var)
+
+print(f"AUC = {auc:.3f} ± {auc_err:.3f}")
+
+#%% Applying ML to microBoone
+
+feature_cols = sim_sig_X.columns.tolist()
+
+ud = data_data[data_data['Total energy'] < 2.5].copy()
+ud[ud.columns] = ud.apply(pd.to_numeric, errors="coerce")
+
+ud["ML_score"] = model.predict_proba(ud[feature_cols])[:, 1]
+
+plt.hist(ud["ML_score"], bins=100, histtype="step")
+plt.show()
+
+prediction_test = model.predict_proba(x_test)
+sig_scores = [p[1] for p, cls in zip(prediction_test, y_test) if cls == 1]
+bkg_scores = [p[1] for p, cls in zip(prediction_test, y_test) if cls == 0]
+
+plt.hist(sig_scores, bins=50, weights=[w for w, cls in zip(w_test, y_test) if cls == 1], alpha=0.5, label="MC signal")
+plt.hist(bkg_scores, bins=50, weights=[w for w, cls in zip(w_test, y_test) if cls == 0], alpha=0.5, label="MC background")
+plt.hist(ud["ML_score"], bins=50, histtype="step", label="Data")
+plt.xlabel("Signal probability")
+plt.ylabel("Events")
+plt.legend()
+plt.show()
+
+prediction_test = model.predict_proba(x_test)[:, 1]
+fpr, tpr, thr = roc_curve(y_test, prediction_test)
+
+score_cut = 0.8
+ud_sel = ud[ud["ML_score"] > score_cut]
+
+plt.hist(ud_sel["Total energy"], bins=13)
+plt.xlabel("Total energy")
+plt.ylabel("Events")
+plt.title(f"Data with ML_score > {score_cut}")
+plt.show()
+
+#%% Applying Ml to unosc sim
+
+feature_cols = sim_sig_X.columns.tolist()
+
+us_ml = data_unosc[data_unosc["Total energy"] < 2.5].copy()
+us_ml[us_ml.columns] = us_ml.apply(pd.to_numeric, errors="coerce")
+
+us_ml["ML_score"] = model.predict_proba(us_ml[feature_cols])[:, 1]
+
+plt.hist(us_ml["ML_score"], bins=100, histtype="step", label="Unoscillated MC")
+plt.xlabel("Signal probability")
+plt.ylabel("Events")
+plt.legend()
+plt.show()
+
+score_cut = 0.8
+us_sel = us_ml[us_ml["ML_score"] > score_cut]
+
+plt.hist(us_sel["Total energy"], bins=13)
+plt.xlabel("Total energy")
+plt.ylabel("Events")
+plt.title(f"unosc Data with ML_score > {score_cut}")
+plt.show()
+
+#%% Applying ML to osc sim
+
+feature_cols = sim_sig_X.columns.tolist()
+
+os_ml = data_osc[data_osc["Total energy"] < 2.5].copy()
+os_ml[os_ml.columns] = os_ml.apply(pd.to_numeric, errors="coerce")
+
+os_ml["ML_score"] = model.predict_proba(os_ml[feature_cols])[:, 1]
+
+plt.hist(os_ml["ML_score"], bins=100, histtype="step", label="Unoscillated MC")
+plt.xlabel("Signal probability")
+plt.ylabel("Events")
+plt.legend()
+plt.show()
+
+score_cut = 0.8
+os_sel = os_ml[os_ml["ML_score"] > score_cut]
+
+plt.hist(os_sel["Total energy"], bins=13)
+plt.xlabel("Total energy")
+plt.ylabel("Events")
+plt.title(f"unosc Data with ML_score > {score_cut}")
+plt.show()
+
+#%% limited entropy - reconstructed vs simulayted total energy
+
+os = data_osc[np.logical_and(data_osc['Simulation category'] == 21, data_osc['Total energy'] < 100)]
+
+def entropy(p):
+    p = p[p > 0]
+    return -np.sum(p * np.log(p))
+
+E_true = os["Simulated neutrino energy"].values
+E_reco = os["Total energy"].values
+
+bin_range = range(5, 41)
+MI = []
+
+for nb in bin_range:
+    H2d, _, _ = np.histogram2d(E_true, E_reco, bins=nb)
+    Pxy = H2d / np.sum(H2d)
+    Px = np.sum(Pxy, axis=1)
+    Py = np.sum(Pxy, axis=0)
+    Hx = entropy(Px)
+    Hxy = entropy(Pxy.flatten())
+    MI.append(Hx + entropy(Py) - Hxy)
+
+MI = np.array(MI)
+nb_opt = bin_range[np.argmax(np.gradient(MI))]
+
+print("Information saturation around bins =", nb_opt)
+
+plt.figure(figsize=(6,4))
+plt.plot(bin_range, MI, marker="o")
+plt.axvline(nb_opt, color="red", linestyle="--", label="Number of Bins = 13")
+plt.xlabel("Number of bins", fontsize=18)
+plt.ylabel("Mutual information", fontsize=18)
+plt.legend(fontsize=14)
+plt.tight_layout()
+plt.xticks(fontsize=16)
+plt.yticks(fontsize=16)
+plt.show()
+
+os = data_osc[np.logical_and(data_osc['Simulation category'] == 21, data_osc['Total energy'] < 2.5)]
+
+#%% error due to reconstruction
+
+bins = np.linspace(0.5, 2.5, 13)
+
+h_t, _ = np.histogram(os["Simulated neutrino energy"], bins=bins)
+h_r, _ = np.histogram(os["Total energy"], bins=bins)
+
+m = h_t > 0
+bc = 0.5 * (bins[:-1] + bins[1:])[m]
+fd = (h_r[m] - h_t[m]) / h_t[m]
+fe = np.abs(fd)
+
+rt = h_r / h_t
+
+plt.figure(figsize=(7,4))
+plt.axhline(1, c="k", ls="--")
+plt.plot(bc, rt, "x", color='green')
+plt.xlabel("Energy (GeV)", fontsize=18)
+plt.ylabel("Reconstructed / Total", fontsize=18)
+plt.xticks(fontsize=15)
+plt.yticks(fontsize=15)
+plt.tight_layout()
+plt.show()
+
+#%% chi2 on sim osc vs sim unosc
+
+nbins = 13
+emax = 4
+edges = np.linspace(0.2, emax, nbins + 1)
+
+def equation(sin2thet, dm2, E, L):
+    return (sin2thet) * ((np.sin((1.27 * L * dm2) / E))**2)
+
+theta_grid = np.logspace(-2.5, 0, 45)
+m2_grid    = np.logspace(-1, 1.1, 45)
+chi2_grid = np.zeros((len(theta_grid), len(m2_grid)))
+
+osc_counts, _ = np.histogram(os['Total energy'], bins=edges,weights = os['Simulation weight'])
+
+for i, theta in enumerate(theta_grid):
+    for j, dm2 in enumerate(m2_grid):
+        weights = us['Simulation weight'] * (1-equation(theta, dm2, us['Total energy'], 0.47))
+        hist,_ = np.histogram(us['Total energy'], bins=edges,weights = weights)
+        sigma = np.sqrt(hist + (0.15 * hist)**2)
+        sigma[sigma <= 0] = np.inf
+        chi2_grid[i, j] = np.sum((osc_counts - hist)**2 / sigma**2)
+
+def chi2_func(params):
+    theta, dm2 = params
+
+    weights = us['Simulation weight'] * (1-equation(theta, dm2, us['Total energy'], 0.47))
+    hist, _ = np.histogram(us['Total energy'], bins=edges, weights=weights)
+    sigma = np.sqrt(hist + (0.15 * hist)**2)
+
+    sigma_safe = sigma.copy()
+    sigma_safe[sigma_safe <= 0] = np.inf
+
+    return np.sum((osc_counts - hist)**2 / sigma_safe**2)
+
+imin, jmin = np.unravel_index(np.argmin(chi2_grid), chi2_grid.shape)
+theta0 = theta_grid[imin]
+dm20   = m2_grid[jmin]
+
+x0 = [theta0, dm20]
+
+res = minimize(chi2_func, [theta0, dm20],
+               bounds=[(theta_grid.min(), theta_grid.max()),
+                       (m2_grid.min(), m2_grid.max())])
+
+best_theta_cont, best_m2_cont = res.x
+best_chi2_cont = res.fun
+
+print("Grid best θ, Δm², χ²:")
+print("  sin(2θ)^2   =", theta0)
+print("  Δm² =", dm20)
+print("  χ²  =", chi2_grid[imin, jmin])
+
+print("\nSciPy minimize best θ, Δm², χ²:")
+print("  sin(2θ)^2   =", best_theta_cont)
+print("  Δm² =", best_m2_cont)
+print("  χ²  =", best_chi2_cont)
+
+#%% uncertainty
+
+cmin = chi2_grid[imin, jmin]
+dc = 1.0
+
+pt = np.min(chi2_grid, axis=1)
+mt = pt <= cmin + dc
+tlo, thi = theta_grid[mt][0], theta_grid[mt][-1]
+dt_lo, dt_hi = theta0 - tlo, thi - theta0
+
+pm = np.min(chi2_grid, axis=0)
+mm = pm <= cmin + dc
+mlo, mhi = m2_grid[mm][0], m2_grid[mm][-1]
+dm_lo, dm_hi = dm20 - mlo, mhi - dm20
+
+print(f"\n1σ uncertainties (Δχ² = 1):")
+print(f"  sin²(2θ) = {theta0:.4g} +{dt_hi:.2g} -{dt_lo:.2g}")
+print(f"  Δm²      = {dm20:.4g} +{dm_hi:.2g} -{dm_lo:.2g}")
+
+#%% plotting heatmap
+
+theta_fine = np.logspace(-2.5, 0, 100)
+m2_fine    = np.logspace(-1, 1.1, 100) 
+
+Theta, M2 = np.meshgrid(theta_fine, m2_fine)
+chi2_cont = np.zeros_like(Theta)
+
+for i in range(Theta.shape[0]):
+    for j in range(Theta.shape[1]):
+        chi2_cont[i, j] = chi2_func([Theta[i, j], M2[i, j]])
+
+cmap = plt.cm.Greens
+
+plt.figure(figsize=(8,6))
+m = plt.pcolormesh(
+    theta_fine,
+    m2_fine,
+    chi2_cont,
+    shading="auto",
+    cmap=cmap,
+    norm=LogNorm(vmin=7.5572, vmax=8000)
+)
+
+plt.xscale("log")
+plt.yscale("log")
+plt.xticks(fontsize=15)
+plt.yticks(fontsize=15)
+plt.title('osc scim vs unosc sim')
+plt.colorbar(m, label=r"$\chi^2$")
+plt.xlabel(r"$\sin^2(2\theta)$", fontsize=16)
+plt.ylabel(r"$\Delta m^2$", fontsize=16)
+plt.tight_layout()
+plt.show()
+
+#%% hist with probability weights
+
+mix_angle = 0.37111190677203765
+m = 3.6760497952781166
+L = 0.47
+
+energy = np.linspace(0,2.5,len(us['Total energy'])+1)
+centres = 0.5 * (energy[:-1] + energy[1:])
+
+Prob = equation(mix_angle,m,centres,L)
+
+plt.figure(figsize=(9, 6))
+plt.hist(us['Total energy'],weights = (us['Simulation weight'])*(1-Prob), bins=13,alpha=0.8, label='Simulaton with Optimal Params', color='darkseagreen')
+plt.hist(os["Total energy"],weights = os['Simulation weight'], alpha = 0.5, bins=13, label = 'Oscillated Simulation', color='green')
+plt.xlabel("Neutrino Energy (GeV)", fontsize = 22)
+plt.ylabel("Frequency", fontsize=22)
+plt.legend(fontsize=15)
+plt.xticks(fontsize=17)
+plt.yticks(fontsize=17)
+plt.xlim(0.2,2.5)
+plt.tight_layout()
+plt.show()
+
+#%% 2 flav w microboone 
+
+theta_grid = np.logspace(-2.5, 0, 45)     
+m2_grid    = np.logspace(-1, 2, 45)   
+chi2_grid = np.zeros((len(theta_grid), len(m2_grid)))
+
+data_counts, _ = np.histogram(ud_sel["Total energy"], bins=edges)
+
+for i, theta in enumerate(theta_grid):
+    for j, dm2 in enumerate(m2_grid):
+        weights = us_sel["Simulation weight"] * (1 - equation(theta, dm2, us_sel["Total energy"], 0.47))
+        pred, _ = np.histogram(us_sel["Total energy"], bins=edges, weights=weights)
+        sigma = np.sqrt(pred + (0.05 * pred)**2)
+        sigma[sigma <= 0] = np.inf
+        chi2_grid[i, j] = np.sum((data_counts - pred)**2 / sigma**2)
+
+imin, jmin = np.unravel_index(np.argmin(chi2_grid), chi2_grid.shape)
+best_theta = theta_grid[imin]
+best_dm2 = m2_grid[jmin]
+best_chi2 = chi2_grid[imin, jmin]
+
+def chi2_func(params):
+    theta, dm2 = params
+    weights = us_sel["Simulation weight"] * (1 - equation(theta, dm2, us_sel["Total energy"], 0.47))
+    pred, _ = np.histogram(us_sel["Total energy"], bins=edges, weights=weights)
+    sigma = np.sqrt(pred + (0.15 * pred)**2)
+    sigma[sigma <= 0] = np.inf
+
+    return np.sum((data_counts - pred)**2 / sigma**2)
+
+bounds = [(theta_grid.min(), theta_grid.max()),
+          (m2_grid.min(), m2_grid.max())]
+
+result = minimize(chi2_func, x0=[best_theta, best_dm2], bounds=bounds)
+
+best_theta_cont, best_dm2_cont = result.x
+best_chi2_cont = result.fun
+
+print("GRID:", best_theta, best_dm2, best_chi2)
+print("MINIMIZE:", best_theta_cont, best_dm2_cont, best_chi2_cont)
+
+delta_chi2 = chi2_grid - best_chi2
+T, M2 = np.meshgrid(theta_grid, m2_grid, indexing="ij")
+
+#%% uncertainty
+
+cmin = chi2_grid[imin, jmin]
+dc = 1.0
+
+pt = np.min(chi2_grid, axis=1)
+mt = pt <= cmin + dc
+tlo, thi = theta_grid[mt][0], theta_grid[mt][-1]
+dtl, dth = best_theta - tlo, thi - best_theta
+
+pm = np.min(chi2_grid, axis=0)
+mm = pm <= cmin + dc/2
+mlo, mhi = m2_grid[mm][0], m2_grid[mm][-1]
+dml, dmh = best_dm2 - mlo, mhi - best_dm2
+
+print(f"1σ (Δχ²=1)")
+print(f"sin²(2θ) = {best_theta:.4g} +{dth:.2g} -{dtl:.2g}")
+print(f"Δm²      = {best_dm2:.4g} +{dmh:.2g} -{dml:.2g}")
+
+#%% plotting 2 flav microboone heatmap
+
+theta_fine = np.logspace(np.log10(theta_grid.min()),
+                         np.log10(theta_grid.max()), 120)
+m2_fine = np.logspace(np.log10(m2_grid.min()),
+                      np.log10(m2_grid.max()), 120)
+
+Theta, M2 = np.meshgrid(theta_fine, m2_fine)
+chi2_cont = np.zeros_like(Theta)
+
+for i in range(Theta.shape[0]):
+    for j in range(Theta.shape[1]):
+        chi2_cont[i, j] = chi2_func([Theta[i, j], M2[i, j]])
+
+handles = [
+    Line2D([0], [0], color='red',   lw=1.5, label='68% CL'),
+    Line2D([0], [0], color='blue',  lw=1.5, label='90% CL'),
+    Line2D([0], [0], color='black', lw=1.5, label='99% CL')
+]
+
+plt.figure(figsize=(8, 6))
+
+m = plt.pcolormesh(
+    theta_fine,
+    m2_fine,
+    chi2_cont,
+    shading="auto",
+    cmap=cmap,
+    norm=LogNorm(vmin=30, vmax=8000)
+)
+
+delta = chi2_cont - np.min(chi2_cont)
+levels = [2.30, 4.61, 9.21]
+colors = ['red', 'blue', 'black']
+
+plt.contour(
+    theta_fine,
+    m2_fine,
+    delta,
+    levels=levels,
+    colors=colors,
+    linewidths=1.5
+)
+plt.xscale("log")
+plt.yscale("log")
+
+cbar = plt.colorbar(m)
+cbar.set_label(r"$\chi^2$", fontsize=18)
+cbar.ax.tick_params(labelsize=14)
+cbar.set_ticks([30, 50, 100, 300, 1000, 3000, 8000])
+plt.xlabel(r"$\sin^2(2\theta)$", fontsize=20)
+plt.ylabel(r"$\Delta m^2 (eV^2)$", fontsize=20)
+plt.xticks(fontsize=16)
+plt.yticks(fontsize=16)
+plt.legend(handles=handles, fontsize=16, loc="upper left")
+plt.tight_layout()
+plt.show()
+
+#%% 3+1 flav microboone
+
+sin2_2theta_ee = 0.24
+
+def theta_mue(sin2_2theta_mumu):
+    return (
+        (1 - np.sqrt(1 - sin2_2theta_mumu))
+        * (1 - np.sqrt(1 - sin2_2theta_ee))
+    )
+
+data, _ = np.histogram(ud_sel["Total energy"], bins=edges)
+
+chi2 = np.zeros((len(theta_grid), len(m2_grid)))
+
+for i, t in enumerate(theta_grid):
+    for j, m in enumerate(m2_grid):
+        w = us_sel["Simulation weight"] * (1 - equation(t, m, us_sel["Total energy"], 0.47))
+        pred, _ = np.histogram(us_sel["Total energy"], bins=edges, weights=w)
+        s = np.sqrt(pred + (0.15 * pred)**2)
+        s[s <= 0] = np.inf
+        chi2[i, j] = np.sum((data - pred)**2 / s**2)
+
+ig, jg = np.unravel_index(np.argmin(chi2), chi2.shape)
+tmm_g = theta_grid[ig]
+dm_g = m2_grid[jg]
+chi_g = chi2[ig, jg]
+tme_g = theta_mue(tmm_g)
+
+def chi2_fn(p):
+    t, m = p
+    w = us_sel["Simulation weight"] * (1 - equation(t, m, us_sel["Total energy"], 0.47))
+    pred, _ = np.histogram(us_sel["Total energy"], bins=edges, weights=w)
+    s = np.sqrt(pred + (0.15 * pred)**2)
+    s[s <= 0] = np.inf
+    return np.sum((data - pred)**2 / s**2)
+
+res = minimize(
+    chi2_fn,
+    x0=[tmm_g, dm_g],
+    bounds=[(theta_grid.min(), theta_grid.max()),
+            (m2_grid.min(), m2_grid.max())]
+)
+
+tmm_c, dm_c = res.x
+chi_c = res.fun
+tme_c = theta_mue(tmm_c)
+
+print("GRID     :", tme_g, dm_g, chi_g)
+print("MINIMIZE :", tme_c, dm_c, chi_c)
+
+#%% error
+
+cmin = chi2[ig, jg]
+dc = 1.0
+
+tme = theta_mue(theta_grid)
+
+pt = np.min(chi2, axis=1)
+mt = pt <= cmin + dc
+tlo, thi = tme[mt][0], tme[mt][-1]
+dtl, dth = tme_g - tlo, thi - tme_g
+
+pm = np.min(chi2, axis=0)
+mm = pm <= cmin + dc
+mlo, mhi = m2_grid[mm][0], m2_grid[mm][-1]
+dml, dmh = dm_g - mlo, mhi - dm_g
+
+print("1σ (Δχ²=1)")
+print(f"sin²(2θ_μe) = {tme_g:.4g} +{dth:.2g} -{dtl:.2g}")
+print(f"Δm²        = {dm_g:.4g} +{dmh:.2g} -{dml:.2g}")
+
+#%% plotting 3+1 flav heatmap 
+
+tmm_fine = np.logspace(np.log10(theta_grid.min()),
+                       np.log10(theta_grid.max()), 120)
+dm_fine = np.logspace(np.log10(m2_grid.min()),
+                      np.log10(m2_grid.max()), 120)
+
+TMM, DM = np.meshgrid(tmm_fine, dm_fine)
+chi2_fine = np.zeros_like(TMM)
+
+for i in range(TMM.shape[0]):
+    for j in range(TMM.shape[1]):
+        chi2_fine[i, j] = chi2_fn([TMM[i, j], DM[i, j]])
+
+tme_fine = theta_mue(tmm_fine)
+delta = chi2_fine - np.min(chi2_fine)
+
+from matplotlib.lines import Line2D
+handles = [Line2D([0], [0], color="black", label="68/90/99% CL")]
+
+plt.figure(figsize=(8,6))
+m = plt.pcolormesh(tme_fine, dm_fine, chi2_fine,
+                   shading="auto", cmap=cmap,
+                   norm=LogNorm(vmin=np.min(chi2_fine[chi2_fine > 0]),
+                                vmax=np.max(chi2_fine)))
+cs = plt.contour(tme_fine, dm_fine, delta,
+                 levels=[2.30, 4.61, 9.21],
+                 colors="black")
+plt.clabel(cs, fmt={2.30:"68%", 4.61:"90%", 9.21:"99%"})
+plt.xscale("log")
+plt.yscale("log")
+plt.colorbar(m, label=r"$\chi^2$")
+plt.xlabel(r"$\sin^2(2\theta_{\mu e})$", fontsize=16)
+plt.ylabel(r"$\Delta m_41^2$", fontsize=16)
+plt.legend(handles=handles)
+plt.tight_layout()
+plt.show()
+
+#%% plotting 3+1 contours with lsnd
+
+delta = chi2_fine - np.min(chi2_fine)
+
+plt.figure(figsize=(9, 7))
+
+plt.contour(
+    tme_fine,
+    dm_fine,
+    delta,
+    levels=[2.30, 4.61, 9.21],
+    colors=["red", "blue", "black"],
+    linewidths=2
+)
+
+plt.scatter(
+    data_lsnd["x"],
+    data_lsnd["y"],
+    s=120,
+    color="green",
+    alpha=0.7,
+    label="LSND",
+    zorder=1
+)
+
+plt.scatter(
+    data_res["x"],
+    data_res["y"],
+    s=120,
+    color="darkseagreen",
+    alpha=0.7,
+    label="MiniBooNE",
+    zorder=1
+)
+
+plt.xscale("log")
+plt.yscale("log")
+plt.xlim(1e-4, 1e-1)
+plt.ylim(1e-1, 1e2)
+
+plt.xlabel(r"$\sin^2(2\theta_{\mu e})$", fontsize=22)
+plt.ylabel(r"$\Delta m^2_{41} (eV^2)$", fontsize=22)
+
+plt.xticks(fontsize=18)
+plt.yticks(fontsize=18)
+
+legend_handles = [
+    Line2D([0], [0], color="red", lw=2, label="68% CL"),
+    Line2D([0], [0], color="blue", lw=2, label="90% CL"),
+    Line2D([0], [0], color="black", lw=2, label="99% CL"),
+    Line2D([0], [0], color="green", lw=10, alpha=0.6, label="LSND"),
+    Line2D([0], [0], color="darkseagreen", lw=10, alpha=0.6, label="MiniBooNE"),
+]
+
+plt.legend(handles=legend_handles, loc="upper left", fontsize=16)
+plt.tight_layout()
+plt.show()
