@@ -420,7 +420,23 @@ m = plt.pcolormesh(
     cmap=cmap,
     norm=LogNorm(vmin=7.5572, vmax=8000)
 )
+plt.scatter(
+    0.5, 10,
+    color="red",
+    marker="x",
+    s=120,
+    linewidths=2,
+    label="injected parameters"
+)
 
+plt.scatter(
+    0.371, 3.76,
+    color="black",
+    marker="x",
+    s=120,
+    linewidths=2,
+    label=r"minimum $\chi^2$"
+)
 plt.xscale("log")
 plt.yscale("log")
 plt.xticks(fontsize=15)
